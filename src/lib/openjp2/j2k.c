@@ -4275,23 +4275,23 @@ static OPJ_BOOL opj_j2k_write_tlm(opj_j2k_t *p_j2k,
     OPJ_BYTE * l_current_data = 00;
     OPJ_UINT32 l_tlm_size;
     OPJ_UINT32 size_per_tile_part;
+    /* A TLM marker segment is at most 65535 bytes: 2 marker bytes + a 2-byte */
+    /* Ltlm, then Ztlm/Stlm (2 bytes) and size_per_tile_part bytes per entry */
+    const OPJ_UINT32 l_max_entries_per_marker =
+        (65535U - 4U) / 6U; /* computed on the worst case (6-byte entries) */
+    OPJ_UINT32 l_total_tile_parts;
+    OPJ_UINT32 l_nb_tlm_markers;
+    OPJ_UINT32 l_tlm_index;
+    OPJ_UINT32 l_entries_in_marker;
 
     /* preconditions */
     assert(p_j2k != 00);
     assert(p_manager != 00);
     assert(p_stream != 00);
 
-    /* 10921 = (65535 - header_size) / size_per_tile_part where */
-    /* header_size = 4 and size_per_tile_part = 6 */
-    if (p_j2k->m_specific_param.m_encoder.m_total_tile_parts > 10921) {
-        /* We could do more but it would require writing several TLM markers */
-        opj_event_msg(p_manager, EVT_ERROR,
-                      "A maximum of 10921 tile-parts are supported currently "
-                      "when writing TLM marker\n");
-        return OPJ_FALSE;
-    }
+    l_total_tile_parts = p_j2k->m_specific_param.m_encoder.m_total_tile_parts;
 
-    if (p_j2k->m_specific_param.m_encoder.m_total_tile_parts <= 255) {
+    if (l_total_tile_parts <= 255) {
         size_per_tile_part = 5;
         p_j2k->m_specific_param.m_encoder.m_Ttlmi_is_byte = OPJ_TRUE;
     } else {
@@ -4299,8 +4299,36 @@ static OPJ_BOOL opj_j2k_write_tlm(opj_j2k_t *p_j2k,
         p_j2k->m_specific_param.m_encoder.m_Ttlmi_is_byte = OPJ_FALSE;
     }
 
-    l_tlm_size = 2 + 4 + (size_per_tile_part *
-                          p_j2k->m_specific_param.m_encoder.m_total_tile_parts);
+    /* Split the tile-part entries over as many TLM marker segments as needed */
+    /* so that each of them fits in the 65535-byte marker segment limit */
+    if (l_total_tile_parts == 0U) {
+        l_nb_tlm_markers = 1U;
+        l_entries_in_marker = 0U;
+    } else {
+        l_nb_tlm_markers =
+            (l_total_tile_parts - 1U) / l_max_entries_per_marker + 1U;
+        l_entries_in_marker =
+            l_total_tile_parts < l_max_entries_per_marker ?
+            l_total_tile_parts : l_max_entries_per_marker;
+    }
+
+    p_j2k->m_specific_param.m_encoder.m_tlm_markers_start =
+        (OPJ_OFF_T*) opj_calloc(l_nb_tlm_markers, sizeof(OPJ_OFF_T));
+    p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries =
+        (OPJ_UINT32*) opj_calloc(l_nb_tlm_markers, sizeof(OPJ_UINT32));
+    if (! p_j2k->m_specific_param.m_encoder.m_tlm_markers_start ||
+            ! p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries) {
+        opj_free(p_j2k->m_specific_param.m_encoder.m_tlm_markers_start);
+        opj_free(p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries);
+        p_j2k->m_specific_param.m_encoder.m_tlm_markers_start = NULL;
+        p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries = NULL;
+        opj_event_msg(p_manager, EVT_ERROR, "Not enough memory to write TLM marker\n");
+        return OPJ_FALSE;
+    }
+    p_j2k->m_specific_param.m_encoder.m_nb_tlm_markers = l_nb_tlm_markers;
+
+    /* A single marker holds at most l_max_entries_per_marker entries */
+    l_tlm_size = 2 + 4 + size_per_tile_part * l_entries_in_marker;
 
     if (l_tlm_size > p_j2k->m_specific_param.m_encoder.m_header_tile_data_size) {
         OPJ_BYTE *new_header_tile_data = (OPJ_BYTE *) opj_realloc(
@@ -4309,6 +4337,11 @@ static OPJ_BOOL opj_j2k_write_tlm(opj_j2k_t *p_j2k,
             opj_free(p_j2k->m_specific_param.m_encoder.m_header_tile_data);
             p_j2k->m_specific_param.m_encoder.m_header_tile_data = NULL;
             p_j2k->m_specific_param.m_encoder.m_header_tile_data_size = 0;
+            opj_free(p_j2k->m_specific_param.m_encoder.m_tlm_markers_start);
+            opj_free(p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries);
+            p_j2k->m_specific_param.m_encoder.m_tlm_markers_start = NULL;
+            p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries = NULL;
+            p_j2k->m_specific_param.m_encoder.m_nb_tlm_markers = 0;
             opj_event_msg(p_manager, EVT_ERROR, "Not enough memory to write TLM marker\n");
             return OPJ_FALSE;
         }
@@ -4317,36 +4350,48 @@ static OPJ_BOOL opj_j2k_write_tlm(opj_j2k_t *p_j2k,
     }
     memset(p_j2k->m_specific_param.m_encoder.m_header_tile_data, 0, l_tlm_size);
 
-    l_current_data = p_j2k->m_specific_param.m_encoder.m_header_tile_data;
+    for (l_tlm_index = 0; l_tlm_index < l_nb_tlm_markers; ++l_tlm_index) {
+        l_entries_in_marker = l_total_tile_parts -
+                              l_tlm_index * l_max_entries_per_marker;
+        if (l_entries_in_marker > l_max_entries_per_marker) {
+            l_entries_in_marker = l_max_entries_per_marker;
+        }
 
-    /* change the way data is written to avoid seeking if possible */
-    /* TODO */
-    p_j2k->m_specific_param.m_encoder.m_tlm_start = opj_stream_tell(p_stream);
+        l_tlm_size = 2 + 4 + size_per_tile_part * l_entries_in_marker;
 
-    opj_write_bytes(l_current_data, J2K_MS_TLM,
-                    2);                                   /* TLM */
-    l_current_data += 2;
+        p_j2k->m_specific_param.m_encoder.m_tlm_markers_start[l_tlm_index] =
+            opj_stream_tell(p_stream);
+        p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries[l_tlm_index] =
+            l_entries_in_marker;
 
-    opj_write_bytes(l_current_data, l_tlm_size - 2,
-                    2);                                 /* Lpoc */
-    l_current_data += 2;
+        l_current_data = p_j2k->m_specific_param.m_encoder.m_header_tile_data;
 
-    opj_write_bytes(l_current_data, 0,
-                    1);                                                    /* Ztlm=0*/
-    ++l_current_data;
+        opj_write_bytes(l_current_data, J2K_MS_TLM,
+                        2);                                   /* TLM */
+        l_current_data += 2;
 
-    /* Stlm 0x50= ST=1(8bits-255 tiles max),SP=1(Ptlm=32bits) */
-    /* Stlm 0x60= ST=2(16bits-65535 tiles max),SP=1(Ptlm=32bits) */
-    opj_write_bytes(l_current_data,
-                    size_per_tile_part == 5 ? 0x50 : 0x60,
-                    1);
-    ++l_current_data;
+        opj_write_bytes(l_current_data, l_tlm_size - 2,
+                        2);                                 /* Ltlm */
+        l_current_data += 2;
 
-    /* do nothing on the size_per_tile_part * l_j2k->m_specific_param.m_encoder.m_total_tile_parts remaining data */
-    if (opj_stream_write_data(p_stream,
-                              p_j2k->m_specific_param.m_encoder.m_header_tile_data, l_tlm_size,
-                              p_manager) != l_tlm_size) {
-        return OPJ_FALSE;
+        opj_write_bytes(l_current_data, l_tlm_index,
+                        1);                                                    /* Ztlm */
+        ++l_current_data;
+
+        /* Stlm 0x50= ST=1(8bits-255 tiles max),SP=1(Ptlm=32bits) */
+        /* Stlm 0x60= ST=2(16bits-65535 tiles max),SP=1(Ptlm=32bits) */
+        opj_write_bytes(l_current_data,
+                        size_per_tile_part == 5 ? 0x50 : 0x60,
+                        1);
+        ++l_current_data;
+
+        /* The Ttlmi/Ptlmi entries are left zeroed and backfilled by */
+        /* opj_j2k_update_tlm() / opj_j2k_write_updated_tlm() */
+        if (opj_stream_write_data(p_stream,
+                                  p_j2k->m_specific_param.m_encoder.m_header_tile_data, l_tlm_size,
+                                  p_manager) != l_tlm_size) {
+            return OPJ_FALSE;
+        }
     }
 
     return OPJ_TRUE;
@@ -9397,6 +9442,16 @@ void opj_j2k_destroy(opj_j2k_t *p_j2k)
             p_j2k->m_specific_param.m_encoder.m_tlm_sot_offsets_current = 00;
         }
 
+        if (p_j2k->m_specific_param.m_encoder.m_tlm_markers_start) {
+            opj_free(p_j2k->m_specific_param.m_encoder.m_tlm_markers_start);
+            p_j2k->m_specific_param.m_encoder.m_tlm_markers_start = 00;
+        }
+        if (p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries) {
+            opj_free(p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries);
+            p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries = 00;
+        }
+        p_j2k->m_specific_param.m_encoder.m_nb_tlm_markers = 0;
+
         if (p_j2k->m_specific_param.m_encoder.m_header_tile_data) {
             opj_free(p_j2k->m_specific_param.m_encoder.m_header_tile_data);
             p_j2k->m_specific_param.m_encoder.m_header_tile_data = 00;
@@ -13383,9 +13438,10 @@ static OPJ_BOOL opj_j2k_write_updated_tlm(opj_j2k_t *p_j2k,
         struct opj_stream_private *p_stream,
         struct opj_event_mgr * p_manager)
 {
-    OPJ_UINT32 l_tlm_size;
-    OPJ_OFF_T l_tlm_position, l_current_position;
     OPJ_UINT32 size_per_tile_part;
+    OPJ_OFF_T l_current_position;
+    OPJ_UINT32 l_tlm_index;
+    OPJ_UINT32 l_offset;
 
     /* preconditions */
     assert(p_j2k != 00);
@@ -13393,19 +13449,32 @@ static OPJ_BOOL opj_j2k_write_updated_tlm(opj_j2k_t *p_j2k,
     assert(p_stream != 00);
 
     size_per_tile_part = p_j2k->m_specific_param.m_encoder.m_Ttlmi_is_byte ? 5 : 6;
-    l_tlm_size = size_per_tile_part *
-                 p_j2k->m_specific_param.m_encoder.m_total_tile_parts;
-    l_tlm_position = 6 + p_j2k->m_specific_param.m_encoder.m_tlm_start;
     l_current_position = opj_stream_tell(p_stream);
+    l_offset = 0;
 
-    if (! opj_stream_seek(p_stream, l_tlm_position, p_manager)) {
-        return OPJ_FALSE;
-    }
+    /* Backfill each TLM marker segment with its tile-part entries */
+    for (l_tlm_index = 0;
+            l_tlm_index < p_j2k->m_specific_param.m_encoder.m_nb_tlm_markers;
+            ++l_tlm_index) {
+        OPJ_UINT32 l_entries_in_marker =
+            p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries[l_tlm_index];
+        OPJ_UINT32 l_tlm_size = size_per_tile_part * l_entries_in_marker;
 
-    if (opj_stream_write_data(p_stream,
-                              p_j2k->m_specific_param.m_encoder.m_tlm_sot_offsets_buffer, l_tlm_size,
-                              p_manager) != l_tlm_size) {
-        return OPJ_FALSE;
+        /* 6 = TLM(2) + Ltlm(2) + Ztlm(1) + Stlm(1) */
+        if (! opj_stream_seek(p_stream,
+                              p_j2k->m_specific_param.m_encoder.m_tlm_markers_start[l_tlm_index] + 6,
+                              p_manager)) {
+            return OPJ_FALSE;
+        }
+
+        if (opj_stream_write_data(p_stream,
+                                  p_j2k->m_specific_param.m_encoder.m_tlm_sot_offsets_buffer + l_offset,
+                                  l_tlm_size,
+                                  p_manager) != l_tlm_size) {
+            return OPJ_FALSE;
+        }
+
+        l_offset += l_tlm_size;
     }
 
     if (! opj_stream_seek(p_stream, l_current_position, p_manager)) {
@@ -13435,6 +13504,16 @@ static OPJ_BOOL opj_j2k_end_encoding(opj_j2k_t *p_j2k,
         p_j2k->m_specific_param.m_encoder.m_tlm_sot_offsets_buffer = 0;
         p_j2k->m_specific_param.m_encoder.m_tlm_sot_offsets_current = 0;
     }
+
+    if (p_j2k->m_specific_param.m_encoder.m_tlm_markers_start) {
+        opj_free(p_j2k->m_specific_param.m_encoder.m_tlm_markers_start);
+        p_j2k->m_specific_param.m_encoder.m_tlm_markers_start = 0;
+    }
+    if (p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries) {
+        opj_free(p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries);
+        p_j2k->m_specific_param.m_encoder.m_tlm_markers_nb_entries = 0;
+    }
+    p_j2k->m_specific_param.m_encoder.m_nb_tlm_markers = 0;
 
     if (p_j2k->m_specific_param.m_encoder.m_encoded_tile_data) {
         opj_free(p_j2k->m_specific_param.m_encoder.m_encoded_tile_data);

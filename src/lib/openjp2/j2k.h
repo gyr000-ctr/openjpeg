@@ -552,11 +552,14 @@ typedef struct opj_j2k_enc {
     /* whether the Ttlmi field in a TLM marker is a byte (otherwise a uint16) */
     OPJ_BOOL   m_Ttlmi_is_byte;
 
-    /**
-    locate the start position of the TLM marker
-    after encoding the tilepart, a jump (in j2k_write_sod) is done to the TLM marker to store the value of its length.
-    */
-    OPJ_OFF_T m_tlm_start;
+    /** Number of TLM marker segments written in the main header */
+    OPJ_UINT32 m_nb_tlm_markers;
+
+    /** Start position of each TLM marker segment in the stream */
+    OPJ_OFF_T * m_tlm_markers_start;
+
+    /** Number of tile-part entries in each TLM marker segment */
+    OPJ_UINT32 * m_tlm_markers_nb_entries;
     /**
      * Stores the sizes of the tlm.
      */
