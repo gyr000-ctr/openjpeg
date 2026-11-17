@@ -708,6 +708,23 @@ typedef struct opj_image_comp {
 } opj_image_comp_t;
 
 /**
+ * Maximum number of XML (e.g. XMP) metadata boxes stored in an image
+ * */
+#define OPJ_JP2_MAX_XML_BOXES 2
+
+/**
+ * Defines a JP2 UUID box (universally unique identifier metadata box)
+ * */
+typedef struct opj_uuid_box {
+    /** 16-byte universally unique identifier of the box contents */
+    OPJ_BYTE uuid[16];
+    /** box payload */
+    OPJ_BYTE *data;
+    /** size of the box payload */
+    OPJ_UINT32 data_len;
+} opj_uuid_box_t;
+
+/**
  * Defines image data and characteristics
  * */
 typedef struct opj_image {
@@ -729,6 +746,16 @@ typedef struct opj_image {
     OPJ_BYTE *icc_profile_buf;
     /** size of ICC profile */
     OPJ_UINT32 icc_profile_len;
+    /** number of XML (e.g. XMP) metadata boxes */
+    OPJ_UINT32 num_xml;
+    /** XML metadata boxes content (up to OPJ_JP2_MAX_XML_BOXES) */
+    OPJ_BYTE *xml[OPJ_JP2_MAX_XML_BOXES];
+    /** size of each XML metadata box */
+    OPJ_UINT32 xml_len[OPJ_JP2_MAX_XML_BOXES];
+    /** number of UUID metadata boxes */
+    OPJ_UINT32 num_uuids;
+    /** UUID metadata boxes */
+    opj_uuid_box_t *uuids;
 } opj_image_t;
 
 
@@ -1128,6 +1155,81 @@ OPJ_API opj_image_t* OPJ_CALLCONV opj_image_create(OPJ_UINT32 numcmpts,
  * @param image         image to be destroyed
  */
 OPJ_API void OPJ_CALLCONV opj_image_destroy(opj_image_t *image);
+
+/**
+ * Add an XML (e.g. XMP) metadata box to an image. The box will be written
+ * as a JP2 'xml ' box when encoding to JP2. At most OPJ_JP2_MAX_XML_BOXES
+ * boxes can be attached to an image.
+ *
+ * @param image         image to add the metadata to
+ * @param data          content of the XML box (copied)
+ * @param length        size of the content in bytes
+ * @return              OPJ_TRUE if successful, OPJ_FALSE if the maximum
+ *                      number of XML boxes is already reached or on
+ *                      allocation failure
+ */
+OPJ_API OPJ_BOOL OPJ_CALLCONV opj_image_add_xml(opj_image_t *image,
+        const OPJ_BYTE *data,
+        OPJ_UINT32 length);
+
+/**
+ * Get the number of XML metadata boxes attached to an image
+ *
+ * @param image         image to query
+ * @return              the number of XML metadata boxes
+ */
+OPJ_API OPJ_UINT32 OPJ_CALLCONV opj_image_get_num_xml_boxes(
+    const opj_image_t *image);
+
+/**
+ * Get the content of an XML metadata box attached to an image
+ *
+ * @param image         image to query
+ * @param idx           index of the box (0 .. opj_image_get_num_xml_boxes()-1)
+ * @param p_length      if not NULL, filled with the size of the box content
+ * @return              a pointer to the box content (owned by the image),
+ *                      or NULL if idx is out of range
+ */
+OPJ_API const OPJ_BYTE * OPJ_CALLCONV opj_image_get_xml_box(
+    const opj_image_t *image,
+    OPJ_UINT32 idx,
+    OPJ_UINT32 *p_length);
+
+/**
+ * Add a UUID metadata box to an image. The box will be written as a JP2
+ * 'uuid' box when encoding to JP2.
+ *
+ * @param image         image to add the metadata to
+ * @param uuid          16-byte universally unique identifier of the box
+ * @param data          payload of the box (copied), may be NULL if length is 0
+ * @param length        size of the payload in bytes
+ * @return              OPJ_TRUE if successful, OPJ_FALSE on allocation failure
+ */
+OPJ_API OPJ_BOOL OPJ_CALLCONV opj_image_add_uuid_box(opj_image_t *image,
+        const OPJ_BYTE uuid[16],
+        const OPJ_BYTE *data,
+        OPJ_UINT32 length);
+
+/**
+ * Get the number of UUID metadata boxes attached to an image
+ *
+ * @param image         image to query
+ * @return              the number of UUID metadata boxes
+ */
+OPJ_API OPJ_UINT32 OPJ_CALLCONV opj_image_get_num_uuid_boxes(
+    const opj_image_t *image);
+
+/**
+ * Get a UUID metadata box attached to an image
+ *
+ * @param image         image to query
+ * @param idx           index of the box (0 .. opj_image_get_num_uuid_boxes()-1)
+ * @return              a pointer to the UUID box (owned by the image),
+ *                      or NULL if idx is out of range
+ */
+OPJ_API const opj_uuid_box_t * OPJ_CALLCONV opj_image_get_uuid_box(
+    const opj_image_t *image,
+    OPJ_UINT32 idx);
 
 /**
  * Creates an image without allocating memory for the image (used in the new version of the library).

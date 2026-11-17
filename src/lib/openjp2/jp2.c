@@ -325,6 +325,50 @@ static OPJ_BOOL opj_jp2_read_colr(opj_jp2_t *jp2,
                                   OPJ_UINT32 p_colr_header_size,
                                   opj_event_mgr_t * p_manager);
 
+/**
+ * Reads an XML box (XMP metadata).
+ *
+ * @param   jp2                 the jpeg2000 file codec.
+ * @param   p_header_data       pointer to actual data (already read from file)
+ * @param   p_header_size       the size of the box content
+ * @param   p_manager           the user event manager.
+ *
+ * @return  true if the box is valid, false else.
+*/
+static OPJ_BOOL opj_jp2_read_xml(opj_jp2_t *jp2,
+                                 OPJ_BYTE * p_header_data,
+                                 OPJ_UINT32 p_header_size,
+                                 opj_event_mgr_t * p_manager);
+
+/**
+ * Reads a UUID box.
+ *
+ * @param   jp2                 the jpeg2000 file codec.
+ * @param   p_header_data       pointer to actual data (already read from file)
+ * @param   p_header_size       the size of the box content
+ * @param   p_manager           the user event manager.
+ *
+ * @return  true if the box is valid, false else.
+*/
+static OPJ_BOOL opj_jp2_read_uuid(opj_jp2_t *jp2,
+                                  OPJ_BYTE * p_header_data,
+                                  OPJ_UINT32 p_header_size,
+                                  opj_event_mgr_t * p_manager);
+
+/**
+ * Writes the XML and UUID metadata boxes collected on the codec, if any.
+ * Writes nothing at all when no metadata is present.
+ *
+ * @param   jp2         the jpeg2000 file codec.
+ * @param   stream      the stream to write data to.
+ * @param   p_manager   the user event manager.
+ *
+ * @return  true if writing was successful.
+ */
+static OPJ_BOOL opj_jp2_write_metadata(opj_jp2_t *jp2,
+                                       opj_stream_private_t *stream,
+                                       opj_event_mgr_t * p_manager);
+
 /*@}*/
 
 /*@}*/
@@ -425,7 +469,9 @@ static const opj_jp2_header_handler_t * opj_jp2_find_handler(OPJ_UINT32 p_id);
 static const opj_jp2_header_handler_t jp2_header [] = {
     {JP2_JP, opj_jp2_read_jp},
     {JP2_FTYP, opj_jp2_read_ftyp},
-    {JP2_JP2H, opj_jp2_read_jp2h}
+    {JP2_JP2H, opj_jp2_read_jp2h},
+    {JP2_XML, opj_jp2_read_xml},
+    {JP2_UUID, opj_jp2_read_uuid}
 };
 
 static const opj_jp2_header_handler_t jp2_img_header [] = {
@@ -530,6 +576,147 @@ static OPJ_BOOL opj_jp2_read_boxhdr(opj_jp2_box_t *box,
         }
         opj_read_bytes(l_data_header + 4, &(box->length), 4);
     }
+    return OPJ_TRUE;
+}
+
+static OPJ_BOOL opj_jp2_read_xml(opj_jp2_t *jp2,
+                                 OPJ_BYTE * p_header_data,
+                                 OPJ_UINT32 p_header_size,
+                                 opj_event_mgr_t * p_manager)
+{
+    /* preconditions */
+    assert(p_header_data != 00);
+    assert(jp2 != 00);
+    assert(p_manager != 00);
+
+    if (jp2->num_xml >= OPJ_JP2_MAX_XML_BOXES) {
+        opj_event_msg(p_manager, EVT_ERROR,
+                      "Too many 'xml ' boxes in JP2 file: maximum %d supported\n",
+                      OPJ_JP2_MAX_XML_BOXES);
+        return OPJ_FALSE;
+    }
+
+    jp2->xml[jp2->num_xml] = (OPJ_BYTE*)opj_malloc(
+                                 p_header_size ? p_header_size : 1);
+    if (jp2->xml[jp2->num_xml] == 00) {
+        opj_event_msg(p_manager, EVT_ERROR,
+                      "Not enough memory to handle 'xml ' box\n");
+        return OPJ_FALSE;
+    }
+    if (p_header_size) {
+        memcpy(jp2->xml[jp2->num_xml], p_header_data, p_header_size);
+    }
+    jp2->xml_len[jp2->num_xml] = p_header_size;
+    jp2->num_xml++;
+
+    return OPJ_TRUE;
+}
+
+static OPJ_BOOL opj_jp2_read_uuid(opj_jp2_t *jp2,
+                                  OPJ_BYTE * p_header_data,
+                                  OPJ_UINT32 p_header_size,
+                                  opj_event_mgr_t * p_manager)
+{
+    opj_uuid_box_t * l_new_uuids;
+    opj_uuid_box_t * l_box;
+
+    /* preconditions */
+    assert(p_header_data != 00);
+    assert(jp2 != 00);
+    assert(p_manager != 00);
+
+    if (p_header_size < 16) {
+        opj_event_msg(p_manager, EVT_ERROR,
+                      "Bad 'uuid' box: content size %u is smaller than the 16-byte UUID\n",
+                      p_header_size);
+        return OPJ_FALSE;
+    }
+
+    l_new_uuids = (opj_uuid_box_t*)opj_realloc(jp2->uuids,
+                  (jp2->num_uuids + 1) * sizeof(opj_uuid_box_t));
+    if (l_new_uuids == 00) {
+        opj_event_msg(p_manager, EVT_ERROR,
+                      "Not enough memory to handle 'uuid' box\n");
+        return OPJ_FALSE;
+    }
+    jp2->uuids = l_new_uuids;
+
+    l_box = &jp2->uuids[jp2->num_uuids];
+    memcpy(l_box->uuid, p_header_data, 16);
+    l_box->data = NULL;
+    l_box->data_len = p_header_size - 16;
+
+    if (l_box->data_len) {
+        l_box->data = (OPJ_BYTE*)opj_malloc(l_box->data_len);
+        if (l_box->data == 00) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "Not enough memory to handle 'uuid' box\n");
+            return OPJ_FALSE;
+        }
+        memcpy(l_box->data, p_header_data + 16, l_box->data_len);
+    }
+
+    jp2->num_uuids++;
+
+    return OPJ_TRUE;
+}
+
+static OPJ_BOOL opj_jp2_write_metadata(opj_jp2_t *jp2,
+                                       opj_stream_private_t *stream,
+                                       opj_event_mgr_t * p_manager)
+{
+    OPJ_UINT32 i;
+    OPJ_BYTE l_box_header[8];
+
+    /* preconditions */
+    assert(jp2 != 00);
+    assert(stream != 00);
+    assert(p_manager != 00);
+
+    for (i = 0; i < jp2->num_xml; ++i) {
+        opj_write_bytes(l_box_header, 8 + jp2->xml_len[i], 4); /* box size */
+        opj_write_bytes(l_box_header + 4, JP2_XML, 4); /* 'xml ' */
+
+        if (opj_stream_write_data(stream, l_box_header, 8, p_manager) != 8) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "Stream error while writing 'xml ' box\n");
+            return OPJ_FALSE;
+        }
+        if (jp2->xml_len[i] != 0 &&
+                opj_stream_write_data(stream, jp2->xml[i], jp2->xml_len[i],
+                                      p_manager) != jp2->xml_len[i]) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "Stream error while writing 'xml ' box\n");
+            return OPJ_FALSE;
+        }
+    }
+
+    for (i = 0; i < jp2->num_uuids; ++i) {
+        opj_write_bytes(l_box_header, 8 + 16 + jp2->uuids[i].data_len,
+                        4); /* box size */
+        opj_write_bytes(l_box_header + 4, JP2_UUID, 4); /* 'uuid' */
+
+        if (opj_stream_write_data(stream, l_box_header, 8, p_manager) != 8) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "Stream error while writing 'uuid' box\n");
+            return OPJ_FALSE;
+        }
+        if (opj_stream_write_data(stream, jp2->uuids[i].uuid, 16,
+                                  p_manager) != 16) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "Stream error while writing 'uuid' box\n");
+            return OPJ_FALSE;
+        }
+        if (jp2->uuids[i].data_len != 0 &&
+                opj_stream_write_data(stream, jp2->uuids[i].data,
+                                      jp2->uuids[i].data_len,
+                                      p_manager) != jp2->uuids[i].data_len) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "Stream error while writing 'uuid' box\n");
+            return OPJ_FALSE;
+        }
+    }
+
     return OPJ_TRUE;
 }
 
@@ -2008,6 +2195,47 @@ OPJ_BOOL opj_jp2_setup_encoder(opj_jp2_t *jp2,
         }
     }
 
+    /* Metadata boxes (XML / UUID) */
+    for (i = 0; i < image->num_xml && i < OPJ_JP2_MAX_XML_BOXES; ++i) {
+        if (image->xml_len[i] == 0 || image->xml[i] == NULL) {
+            continue;
+        }
+        jp2->xml[jp2->num_xml] = (OPJ_BYTE*)opj_malloc(image->xml_len[i]);
+        if (jp2->xml[jp2->num_xml] == NULL) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "Not enough memory when setup the JP2 encoder\n");
+            return OPJ_FALSE;
+        }
+        memcpy(jp2->xml[jp2->num_xml], image->xml[i], image->xml_len[i]);
+        jp2->xml_len[jp2->num_xml] = image->xml_len[i];
+        jp2->num_xml++;
+    }
+    for (i = 0; i < image->num_uuids; ++i) {
+        opj_uuid_box_t *l_new_uuids = (opj_uuid_box_t*)opj_realloc(jp2->uuids,
+                                      (jp2->num_uuids + 1) * sizeof(opj_uuid_box_t));
+        opj_uuid_box_t *l_box;
+        if (l_new_uuids == NULL) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "Not enough memory when setup the JP2 encoder\n");
+            return OPJ_FALSE;
+        }
+        jp2->uuids = l_new_uuids;
+        l_box = &jp2->uuids[jp2->num_uuids];
+        memcpy(l_box->uuid, image->uuids[i].uuid, 16);
+        l_box->data = NULL;
+        l_box->data_len = image->uuids[i].data_len;
+        if (l_box->data_len) {
+            l_box->data = (OPJ_BYTE*)opj_malloc(l_box->data_len);
+            if (l_box->data == NULL) {
+                opj_event_msg(p_manager, EVT_ERROR,
+                              "Not enough memory when setup the JP2 encoder\n");
+                return OPJ_FALSE;
+            }
+            memcpy(l_box->data, image->uuids[i].data, l_box->data_len);
+        }
+        jp2->num_uuids++;
+    }
+
     /* Channel Definition box */
     /* FIXME not provided by parameters */
     /* We try to do what we can... */
@@ -2900,6 +3128,25 @@ OPJ_BOOL opj_jp2_read_header(opj_stream_private_t *p_stream,
             (*p_image)->icc_profile_len = jp2->color.icc_profile_len;
             jp2->color.icc_profile_buf = NULL;
         }
+
+        /* Transfer metadata boxes (XML / UUID) collected while reading */
+        /* the JP2 header to the image (ownership is moved). */
+        {
+            OPJ_UINT32 i;
+            for (i = 0; i < jp2->num_xml; ++i) {
+                (*p_image)->xml[i] = jp2->xml[i];
+                (*p_image)->xml_len[i] = jp2->xml_len[i];
+                jp2->xml[i] = NULL;
+                jp2->xml_len[i] = 0;
+            }
+            (*p_image)->num_xml = jp2->num_xml;
+            jp2->num_xml = 0;
+
+            (*p_image)->uuids = jp2->uuids;
+            (*p_image)->num_uuids = jp2->num_uuids;
+            jp2->uuids = NULL;
+            jp2->num_uuids = 0;
+        }
     }
     return ret;
 }
@@ -2952,6 +3199,10 @@ static OPJ_BOOL opj_jp2_setup_header_writing(opj_jp2_t *jp2,
     }
     if (! opj_procedure_list_add_procedure(jp2->m_procedure_list,
                                            (opj_procedure)opj_jp2_write_jp2h, p_manager)) {
+        return OPJ_FALSE;
+    }
+    if (! opj_procedure_list_add_procedure(jp2->m_procedure_list,
+                                           (opj_procedure)opj_jp2_write_metadata, p_manager)) {
         return OPJ_FALSE;
     }
     if (jp2->jpip_on) {
@@ -3039,6 +3290,8 @@ OPJ_BOOL opj_jp2_decode_tile(opj_jp2_t * p_jp2,
 void opj_jp2_destroy(opj_jp2_t *jp2)
 {
     if (jp2) {
+        OPJ_UINT32 i;
+
         /* destroy the J2K codec */
         opj_j2k_destroy(jp2->j2k);
         jp2->j2k = 00;
@@ -3088,6 +3341,26 @@ void opj_jp2_destroy(opj_jp2_t *jp2)
 
             opj_free(jp2->color.jp2_pclr);
             jp2->color.jp2_pclr = 00;
+        }
+
+        /* metadata boxes */
+        for (i = 0; i < jp2->num_xml && i < OPJ_JP2_MAX_XML_BOXES; ++i) {
+            if (jp2->xml[i]) {
+                opj_free(jp2->xml[i]);
+                jp2->xml[i] = 00;
+            }
+        }
+        jp2->num_xml = 0;
+
+        if (jp2->uuids) {
+            for (i = 0; i < jp2->num_uuids; ++i) {
+                if (jp2->uuids[i].data) {
+                    opj_free(jp2->uuids[i].data);
+                }
+            }
+            opj_free(jp2->uuids);
+            jp2->uuids = 00;
+            jp2->num_uuids = 0;
         }
 
         if (jp2->m_validation_list) {

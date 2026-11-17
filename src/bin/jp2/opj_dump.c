@@ -638,6 +638,39 @@ int main(int argc, char *argv[])
 
         opj_dump_codec(l_codec, img_fol.flag, fout);
 
+        /* List JP2 metadata boxes (XML / UUID) attached to the image */
+        if (image && parameters.decod_format == JP2_CFMT) {
+            OPJ_UINT32 num_xml = opj_image_get_num_xml_boxes(image);
+            OPJ_UINT32 num_uuid = opj_image_get_num_uuid_boxes(image);
+            OPJ_UINT32 i, j;
+
+            if (num_xml || num_uuid) {
+                fprintf(fout, "JP2 metadata boxes:\n");
+            }
+            for (i = 0; i < num_xml; i++) {
+                OPJ_UINT32 xml_len = 0;
+                const OPJ_BYTE *xml = opj_image_get_xml_box(image, i, &xml_len);
+                fprintf(fout, "\txml box #%u: %u bytes\n", i, xml_len);
+                if (xml && xml_len) {
+                    fprintf(fout, "%.*s\n", (int)xml_len, (const char*)xml);
+                }
+            }
+            for (i = 0; i < num_uuid; i++) {
+                const opj_uuid_box_t *box = opj_image_get_uuid_box(image, i);
+                if (!box) {
+                    continue;
+                }
+                fprintf(fout, "\tuuid box #%u: uuid=", i);
+                for (j = 0; j < 16; j++) {
+                    fprintf(fout, "%02x", box->uuid[j]);
+                }
+                fprintf(fout, ", %u bytes\n", box->data_len);
+            }
+            if (num_xml || num_uuid) {
+                fprintf(fout, "\n");
+            }
+        }
+
         cstr_info = opj_get_cstr_info(l_codec);
 
         cstr_index = opj_get_cstr_index(l_codec);

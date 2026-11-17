@@ -91,6 +91,8 @@ opj_image_t* OPJ_CALLCONV opj_image_create(OPJ_UINT32 numcmpts,
 void OPJ_CALLCONV opj_image_destroy(opj_image_t *image)
 {
     if (image) {
+        OPJ_UINT32 i;
+
         if (image->comps) {
             OPJ_UINT32 compno;
 
@@ -108,8 +110,137 @@ void OPJ_CALLCONV opj_image_destroy(opj_image_t *image)
             opj_free(image->icc_profile_buf);
         }
 
+        /* XML (XMP) metadata boxes */
+        for (i = 0; i < image->num_xml && i < OPJ_JP2_MAX_XML_BOXES; ++i) {
+            if (image->xml[i]) {
+                opj_free(image->xml[i]);
+                image->xml[i] = NULL;
+            }
+        }
+        image->num_xml = 0;
+
+        /* UUID metadata boxes */
+        if (image->uuids) {
+            for (i = 0; i < image->num_uuids; ++i) {
+                if (image->uuids[i].data) {
+                    opj_free(image->uuids[i].data);
+                }
+            }
+            opj_free(image->uuids);
+            image->uuids = NULL;
+            image->num_uuids = 0;
+        }
+
         opj_free(image);
     }
+}
+
+OPJ_BOOL OPJ_CALLCONV opj_image_add_xml(opj_image_t *image,
+                                        const OPJ_BYTE *data,
+                                        OPJ_UINT32 length)
+{
+    OPJ_BYTE *l_buf;
+
+    if (!image || (!data && length != 0)) {
+        return OPJ_FALSE;
+    }
+    if (image->num_xml >= OPJ_JP2_MAX_XML_BOXES) {
+        return OPJ_FALSE;
+    }
+
+    l_buf = (OPJ_BYTE*)opj_malloc(length ? length : 1);
+    if (!l_buf) {
+        return OPJ_FALSE;
+    }
+    if (length) {
+        memcpy(l_buf, data, length);
+    }
+
+    image->xml[image->num_xml] = l_buf;
+    image->xml_len[image->num_xml] = length;
+    image->num_xml++;
+
+    return OPJ_TRUE;
+}
+
+OPJ_UINT32 OPJ_CALLCONV opj_image_get_num_xml_boxes(const opj_image_t *image)
+{
+    if (!image) {
+        return 0;
+    }
+    return image->num_xml;
+}
+
+const OPJ_BYTE * OPJ_CALLCONV opj_image_get_xml_box(const opj_image_t *image,
+        OPJ_UINT32 idx,
+        OPJ_UINT32 *p_length)
+{
+    if (!image || idx >= image->num_xml || idx >= OPJ_JP2_MAX_XML_BOXES) {
+        return NULL;
+    }
+    if (p_length) {
+        *p_length = image->xml_len[idx];
+    }
+    return image->xml[idx];
+}
+
+OPJ_BOOL OPJ_CALLCONV opj_image_add_uuid_box(opj_image_t *image,
+        const OPJ_BYTE uuid[16],
+        const OPJ_BYTE *data,
+        OPJ_UINT32 length)
+{
+    opj_uuid_box_t *l_new_uuids;
+    opj_uuid_box_t *l_box;
+
+    if (!image || !uuid || (!data && length != 0)) {
+        return OPJ_FALSE;
+    }
+    if (image->num_uuids == 0xFFFFFFFFU) {
+        return OPJ_FALSE;
+    }
+
+    l_new_uuids = (opj_uuid_box_t*)opj_realloc(image->uuids,
+                  (image->num_uuids + 1) * sizeof(opj_uuid_box_t));
+    if (!l_new_uuids) {
+        return OPJ_FALSE;
+    }
+    image->uuids = l_new_uuids;
+
+    l_box = &image->uuids[image->num_uuids];
+    memcpy(l_box->uuid, uuid, 16);
+    l_box->data = NULL;
+    l_box->data_len = 0;
+
+    if (length) {
+        l_box->data = (OPJ_BYTE*)opj_malloc(length);
+        if (!l_box->data) {
+            return OPJ_FALSE;
+        }
+        memcpy(l_box->data, data, length);
+        l_box->data_len = length;
+    }
+
+    image->num_uuids++;
+
+    return OPJ_TRUE;
+}
+
+OPJ_UINT32 OPJ_CALLCONV opj_image_get_num_uuid_boxes(const opj_image_t *image)
+{
+    if (!image) {
+        return 0;
+    }
+    return image->num_uuids;
+}
+
+const opj_uuid_box_t * OPJ_CALLCONV opj_image_get_uuid_box(
+    const opj_image_t *image,
+    OPJ_UINT32 idx)
+{
+    if (!image || idx >= image->num_uuids) {
+        return NULL;
+    }
+    return &image->uuids[idx];
 }
 
 /**

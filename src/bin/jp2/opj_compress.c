@@ -88,6 +88,8 @@ typedef struct img_folder {
     char set_imgdir;
     /** Enable Cod Format for output*/
     char set_out_format;
+    /** XMP metadata file to embed as a JP2 'xml ' box (NULL if none)*/
+    const char *xmp_filename;
 } img_fol_t;
 
 static void encode_help_display(void)
@@ -310,6 +312,10 @@ static void encode_help_display(void)
     fprintf(stdout, "-jpip\n");
     fprintf(stdout, "    Write jpip codestream index box in JP2 output file.\n");
     fprintf(stdout, "    Currently supports only RPCL order.\n");
+    fprintf(stdout, "-XMP <file>\n");
+    fprintf(stdout,
+            "    Embed the content of <file> as XMP metadata in a JP2 'xml ' box.\n");
+    fprintf(stdout, "    Only valid for JP2 output files.\n");
     fprintf(stdout, "-C <comment>\n");
     fprintf(stdout, "    Add <comment> in the comment marker segment.\n");
     if (opj_has_thread_support()) {
@@ -638,11 +644,12 @@ static int parse_cmdline_encoder(int argc, char **argv,
         {"threads",   REQ_ARG, NULL, 'B'},
         {"TLM", NO_ARG, NULL, 'D'},
         {"TargetBitDepth", REQ_ARG, NULL, 'X'},
-        {"GuardBits", REQ_ARG, NULL, 'G'}
+        {"GuardBits", REQ_ARG, NULL, 'G'},
+        {"XMP", REQ_ARG, NULL, 'k'}
     };
 
     /* parse the command line */
-    const char optlist[] = "i:o:r:q:n:b:c:t:p:s:SEM:x:R:d:T:If:P:C:F:u:JY:X:G:"
+    const char optlist[] = "i:o:r:q:n:b:c:t:p:s:SEM:x:R:d:T:If:P:C:F:u:JY:X:G:k:"
 #ifdef USE_JPWL
                            "W:"
 #endif /* USE_JPWL */
@@ -942,6 +949,12 @@ static int parse_cmdline_encoder(int argc, char **argv,
         case 'G': {         /* guard bits */
             char *s = opj_optarg;
             sscanf(s, "%d", pOutGuardBits);
+        }
+        break;
+
+        /* ----------------------------------------------------- */
+        case 'k': {         /* XMP metadata file (embedded as JP2 'xml ' box) */
+            img_fol->xmp_filename = opj_optarg;
         }
         break;
 
@@ -1916,6 +1929,57 @@ static OPJ_FLOAT64 opj_clock(void)
  * OPJ_COMPRESS MAIN
  */
 /* -------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------------------------ */
+
+/**
+ * Read the content of an XMP file and attach it to the image as an XML
+ * metadata box (written as a JP2 'xml ' box on encode).
+ */
+static OPJ_BOOL add_xmp_metadata(opj_image_t *image, const char *xmp_filename)
+{
+    FILE *f = NULL;
+    long fsize;
+    OPJ_BYTE *buf = NULL;
+    OPJ_BOOL success = OPJ_FALSE;
+
+    f = fopen(xmp_filename, "rb");
+    if (!f) {
+        fprintf(stderr, "Cannot open XMP file %s\n", xmp_filename);
+        return OPJ_FALSE;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        goto cleanup;
+    }
+    fsize = ftell(f);
+    if (fsize < 0 || (unsigned long)fsize > 0xFFFFFFFFUL - 8UL) {
+        fprintf(stderr, "XMP file %s is too large\n", xmp_filename);
+        goto cleanup;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        goto cleanup;
+    }
+    buf = (OPJ_BYTE*)malloc((size_t)fsize ? (size_t)fsize : 1);
+    if (!buf) {
+        goto cleanup;
+    }
+    if (fsize > 0 && fread(buf, 1, (size_t)fsize, f) != (size_t)fsize) {
+        fprintf(stderr, "Cannot read XMP file %s\n", xmp_filename);
+        goto cleanup;
+    }
+    if (!opj_image_add_xml(image, buf, (OPJ_UINT32)fsize)) {
+        fprintf(stderr, "Cannot attach XMP metadata to image\n");
+        goto cleanup;
+    }
+    success = OPJ_TRUE;
+
+cleanup:
+    free(buf);
+    fclose(f);
+    return success;
+}
+
+/* ------------------------------------------------------------------------------------ */
+
 int main(int argc, char **argv)
 {
 
@@ -2118,6 +2182,18 @@ int main(int argc, char **argv)
             fprintf(stderr, "Unable to load file: got no image\n");
             ret = 1;
             goto fin;
+        }
+
+        /* Embed XMP metadata as a JP2 'xml ' box if requested */
+        if (img_fol.xmp_filename) {
+            if (parameters.cod_format != JP2_CFMT) {
+                fprintf(stderr,
+                        "Warning: -XMP is only supported for JP2 output, option ignored\n");
+            } else if (!add_xmp_metadata(image, img_fol.xmp_filename)) {
+                opj_image_destroy(image);
+                ret = 1;
+                goto fin;
+            }
         }
 
         /* Decide if MCT should be used */
